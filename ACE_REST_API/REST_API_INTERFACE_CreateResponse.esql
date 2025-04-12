@@ -1,0 +1,244 @@
+
+
+CREATE COMPUTE MODULE REST_API_INTERFACE_CreateResponse
+	/*
+<response>
+	<status>
+		<code>400</code>
+		<name>Bad Request</name>
+		<description>Request sent by the client was syntactically incorrect.</descrption>
+	</status>
+	<message>Failed to execute query.</message>
+	<exception/>
+	<callstack/>
+	<server/>Enterprise v4.2.0 (r57217-b28) schema 6,034"</server>
+	<time>May 19, 2014 1:20:48 PM</time>
+</response>	
+	
+	*/
+CREATE FUNCTION getCreateExceptionTemplate() RETURNS BLOB
+	BEGIN
+		DECLARE cResponse CHAR '<response>
+	<status>
+		<code/>
+		<name/>
+		<description/>
+	</status>
+	<message/>
+	<exception/>
+	<callstack/>
+	<server/>
+	<time/>
+</response>';
+		RETURN CAST(cResponse AS BLOB CCSID 1208);
+	END;	
+
+CREATE FUNCTION getSuccesfulResponse() RETURNS BLOB
+	BEGIN
+		DECLARE cResponse CHAR '<response>
+	<status>
+		<code>200</code>
+		<name>success</name>
+		<description>Operation %S% succeed</description>
+	</status>
+	<message>
+	  <Item>
+	  <messageFlow/>
+	  <application/>
+	  <applResponsible/>
+	  <resourceURI/>
+	  <interfaceVersion/>
+	  <applicationToken/>
+	  </Item>
+	</message>
+	<server/>
+	<time/>
+</response>';
+		RETURN CAST(cResponse AS BLOB CCSID 1208);
+	END;	
+	CREATE PROCEDURE createResp(iN rIAppToken rEFERENCE, IN rStartField REFERENCE, iN cOperation cHAR)
+	BEGIN
+		--DECLARE rIAppToken REFERENCE TO InputRoot.JSON.Data;
+		DECLARE cSQL CHAR 'select * from application_tokens where MSGFLOW =? AND APPLICATION =?  AND (RESOURCE_URI=?) ';
+	/*
+	{
+	"messageFlow" : "",
+	"application" : "ECommerce",
+	
+	"resourceURI" : "/test/he",
+	"interfaceVersion" : "2014-09-05-DEV-01"
+}
+	*/	
+		dECLARE rResp rOW;
+		IF cOperation = 'REQUEST' aND cOALESCE(rIAppToken.applicationToken,'') > '' THEN
+			sET cSQL = 'select * from application_tokens where APPTOKEN =?';
+			sET rResp.row[] = PASSTHRU(cSQL,COALESCE(rIAppToken.applicationToken,''));
+			
+		eLSEif  COALESCE(rIAppToken.resourceURI,'') > '' THEN
+		 
+			sET rResp.row[] = PASSTHRU(cSQL,COALESCE(rIAppToken.messageFlow,''), COALESCE(rIAppToken.application,''),COALESCE(rIAppToken.resourceURI,''));
+		else
+			sET cSQL = 'select * from application_tokens where MSGFLOW =? AND APPLICATION =?  AND RESOURCE_URI iS NULL ';
+			sET rResp.row[] = PASSTHRU(cSQL,COALESCE(rIAppToken.messageFlow,''), COALESCE(rIAppToken.application,''));
+				
+		eND IF;
+		
+		dECLARE rTest REFERENCE TO rResp.row;
+		IF cOperation <> 'DELETE' aND NOT LASTMOVE(rTest) THEN
+			THROW USER EXCEPTION values ('Application token cant be found');
+		eND IF;	
+		
+		sET rStartField.*:response.*:status.*:description = rEPLACE(rStartField.*:response.*:status.*:description, '%S%', cOperation);
+		DECLARE rMessage rEFERENCE TO rStartField.*:response.*:message.Item;
+		DECLARE rRow rEFERENCE TO rResp.row;
+
+		wHILE LASTMOVE(rRow) DO
+			cREATE NEXTSIBLING oF rMessage aS rMessage fROM rMessage ;			
+			sET rMessage.*:messageFlow = rRow.MSGFLOW;
+			sET rMessage.*:application = rRow.APPLICATION;
+			sET rMessage.*:applResponsible = rRow.APPL_RESPONSIBLE;
+			sET rMessage.*:interfaceVersion = rRow.INTERFACE_VERSION;
+			sET rMessage.*:resourceURI = rRow.RESOURCE_URI;
+			sET rMessage.*:applicationToken = rRow.APPTOKEN;
+			
+			mOVE rRow nextsibling repeat type name;
+		eND WHILE;	
+		sET rStartField.*:response.*:message.Item = null; 
+	END;
+	CREATE PROCEDURE updateApplicationTokenResp(IN rStartField REFERENCE)
+	BEGIN
+		DECLARE rIAppToken REFERENCE TO InputRoot.JSON.Data;
+		cALL createResp(rIAppToken,rStartField,'UPDATE');
+	END;
+	CREATE PROCEDURE createApplicationTokenResp(IN rStartField REFERENCE)
+	BEGIN
+		DECLARE rIAppToken REFERENCE TO InputRoot.JSON.Data;
+		cALL createResp(rIAppToken,rStartField,'CREATE');
+	END;
+	CREATE PROCEDURE deleteApplicationTokenResp(IN rStartField REFERENCE)
+	BEGIN
+		DECLARE rIAppToken REFERENCE TO InputRoot.JSON.Data;
+		cALL createResp(rIAppToken,rStartField,'DELETE');
+		
+	END;
+	CREATE PROCEDURE requestApplicationTokenResp(IN rStartField REFERENCE)
+	BEGIN
+		DECLARE rIAppToken REFERENCE TO InputLocalEnvironment.HTTP.Input.QueryString;
+		cALL createResp(rIAppToken,rStartField,'REQUEST');
+		
+		
+	END;
+	
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		CALL CopyMessageHeaders();
+		--CALL CopyEntireMessage();
+		
+		-- TODO CHECK which case
+		--      successful response from ultimate provider: http resp code 200<=x<300 and payload is jSON or XMLNSC 
+		--      exception from the ultimate provider: http respcode < 200 or >= 300 and payload is BLOB
+		--      exception in flow ExceptionList has content
+		DECLARE rStartField REFERENCE TO OutputRoot.XMLNSC;
+		DECLARE bException BOOLEAN FALSE;
+		DECLARE rRespStatus rEFERENCE TO InputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code";
+		-- TODO Create response for original requester
+					--SET OutputLocalEnvironment.Destination.HTTP.ReplyStatusCode = 500;
+		
+		DECLARE bTemplate BLOB getCreateExceptionTemplate();
+		DECLARE rExceptions REFERENCE TO InputExceptionList.*[1];
+		IF LASTMOVE(rRespStatus) AND (FIELDVALUE(rRespStatus)< 200 oR FIELDVALUE(rRespStatus)>= 300) THEN
+		    --alfresco respons with internal exception
+			CREATE LASTCHILD OF OutputRoot DOMAIN 'XMLNSC' parse(bTemplate, OutputRoot.Properties.Encoding, OutputRoot.Properties.CodedCharSetId);
+			MOVE rStartField TO OutputRoot.XMLNSC;
+			SET rStartField.*:response.*:status.*:code = FIELDVALUE(rRespStatus);
+			SET rStartField.*:response.*:status.*:name = InputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Line";
+			SET rStartField.*:response.*:status.*:description = 'Teamcenter responded with internal exception';
+			SET rStartField.*:response.*:message = CAST(ASBITSTREAM(InputBody) AS CHARACTER CCSID 1208);
+		
+			sET bException = true;
+			--SET rStartField.*:response.*:message = CAST(getAsBLOBXml(InputExceptionList,InputRoot.Properties.CodedCharSetId)AS CHAR CCSID InputRoot.Properties.CodedCharSetId);
+		END IF;
+
+		IF LASTMOVE(rExceptions) THEN
+		    --alfresco respons with internal exception
+		    mOVE rExceptions  TO InputExceptionList; 
+		    dECLARE Error iNT;
+		    dECLARE Text, NodeName,Label,FlowName CHAR;
+		    
+		    
+			CREATE LASTCHILD OF OutputRoot DOMAIN 'XMLNSC' parse(bTemplate, OutputRoot.Properties.Encoding, OutputRoot.Properties.CodedCharSetId);
+			MOVE rStartField TO OutputRoot.XMLNSC;
+			SET rStartField.*:response.*:status.*:code = 111;
+			SET rStartField.*:response.*:status.*:name = 'Unhandled Exception';
+			SET rStartField.*:response.*:status.*:description = 'Internal error in IIB';
+			SET rStartField.*:response.*:message = Text;--CAST(getAsBLOBXml(InputExceptionList,InputRoot.Properties.CodedCharSetId)AS CHAR CCSID InputRoot.Properties.CodedCharSetId);
+			--SET rStartField.*:response.*:server = SQL.BrokerName;
+			--SET rStartField.*:response.*:time = CAST(CURRENT_TIMESTAMP AS CHARACTER FORMAT 'MMM dd, yyyy h:mm:ss a');
+		    SET OutputLocalEnvironment.Destination.HTTP.ReplyStatusCode = 500;
+			sET bException = true;
+			
+			--SET rStartField.*:response.*:message = CAST(getAsBLOBXml(InputExceptionList,InputRoot.Properties.CodedCharSetId)AS CHAR CCSID InputRoot.Properties.CodedCharSetId);
+		END IF;
+
+		IF nOT 	bException tHEN
+
+			SET bTemplate = getSuccesfulResponse();
+			CREATE LASTCHILD OF OutputRoot DOMAIN 'XMLNSC' parse(bTemplate, OutputRoot.Properties.Encoding, OutputRoot.Properties.CodedCharSetId);
+			MOVE rStartField TO OutputRoot.XMLNSC;
+			
+			CASE Environment.Variables.Request.Method
+				WHEN 'POST' THEN CALL createApplicationTokenResp(rStartField);
+				WHEN 'PUT' THEN CALL updateApplicationTokenResp(rStartField);
+				WHEN 'DELETE' THEN CALL deleteApplicationTokenResp(rStartField);
+				WHEN 'GET' THEN CALL requestApplicationTokenResp(rStartField);
+					
+			END CASE;	
+	
+		END IF;	
+	
+		SET rStartField.*:response.*:server = SQL.BrokerName;
+		SET rStartField.*:response.*:time = CAST(CURRENT_TIMESTAMP AS CHARACTER FORMAT 'MMM dd, yyyy h:mm:ss a');
+		
+		-- TODO Conver response to format JSON or XML the original requester set in ResponseType parameter
+		dECLARE bJSON BOOLEAN TRUE;--InputLocalEnvironment.HTTP.Input.QueryString.ResponseType = 'JSON';
+		
+		IF bJSON THEN
+			--SET OutputLocalEnvironment.Variables.Temp = OutputRoot.XMLNSC;
+		  ---SET OutputRoot.JSON.Data =  OutputLocalEnvironment.Variables.Temp;
+		  IF LASTMOVE(rStartField) THEN
+		    
+		    SET OutputRoot.JSON.Data = OutputRoot.XMLNSC.*:response;
+		    --SET OutputRoot.JSON.Data = OutputLocalEnvironment.Variables.Temp;
+		    SET OutputRoot.XMLNSC = NULL;
+		    
+		  ELSE  		     
+		  	SET OutputRoot.JSON = InputRoot.JSON;
+		  eND IF;
+		  SET OutputRoot.HTTPResponseHeader."Content-Type" = 'application/json'; 
+		ELSE
+		  SET OutputRoot.HTTPResponseHeader."Content-Type" = 'text/xml'; 
+		  IF NOT LASTMOVE(rStartField) THEN
+		  	SET OutputRoot.XMLNSC.*:response = InputRoot.JSON.Data;
+		  END IF;	
+		  --SET OutputRoot.JSON.Data = OutputLocalEnvironment.Variables.Temp;
+		  SET OutputRoot.JSON = NULL;
+			  
+		END IF;	
+		  
+		RETURN TRUE;
+	END;
+
+	CREATE PROCEDURE CopyMessageHeaders() BEGIN
+		DECLARE I INTEGER 1;
+		DECLARE J INTEGER;
+		SET J = CARDINALITY(InputRoot.*[]);
+		WHILE I < J DO
+			SET OutputRoot.*[I] = InputRoot.*[I];
+			SET I = I + 1;
+		END WHILE;
+	END;
+
+	CREATE PROCEDURE CopyEntireMessage() BEGIN
+		SET OutputRoot = InputRoot;
+	END;
+END MODULE;

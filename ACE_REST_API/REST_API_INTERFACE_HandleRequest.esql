@@ -1,0 +1,113 @@
+
+DECLARE UltimateProviderSecurityIdentity EXTERNAL CHAR '';
+DECLARE UltimateProviderBaseURL EXTERNAL CHAR '';
+DECLARE flowIdentificationToken EXTERNAL CHAR '';
+
+
+CREATE COMPUTE MODULE REST_API_INTERFACE_HandleRequest
+	
+	CREATE PROCEDURE createApplicationToken()
+	BEGIN
+		DECLARE rIAppToken REFERENCE TO InputRoot.JSON.Data;
+		DECLARE cSQL CHAR 'insert into application_tokens (MSGFLOW, APPLICATION, APPL_RESPONSIBLE, INTERFACE_VERSION, RESOURCE_URI)  VALUES(?,?,?,?,?)';
+		PASSTHRU(cSQL,rIAppToken.messageFlow, rIAppToken.application, rIAppToken.applResponsible , rIAppToken.interfaceVersion,rIAppToken.resourceURI);
+	END;
+	CREATE PROCEDURE requestApplicationToken()
+	BEGIN
+		sET OutputRoot.BLOB.BLOB = null;
+		sET OutputRoot.JSON = null;
+		
+	END;
+	CREATE PROCEDURE updateApplicationToken()
+	BEGIN
+		DECLARE rIAppToken REFERENCE TO InputRoot.JSON.Data;
+		DECLARE rIQueryString REFERENCE TO InputLocalEnvironment.HTTP.Input.QueryString;
+
+		DECLARE cSQL2 CHAR 'select * from application_tokens where MSGFLOW =? AND APPLICATION =? ';
+		dECLARE rResp rOW; 
+		sET rResp.row[] = PASSTHRU(cSQL2,COALESCE(rIQueryString.messageFlow,''), COALESCE(rIQueryString.application,''));
+		dECLARE rTest REFERENCE TO rResp.row;
+		IF NOT LASTMOVE(rTest) THEN
+			THROW USER EXCEPTION values ('Application token cant be found');
+		eND IF;	
+		
+		DECLARE cSQL CHAR 'update application_tokens sET  APPL_RESPONSIBLE=?, INTERFACE_VERSION=?, RESOURCE_URI=?,MSGFLOW = ?, APPLICATION =?  where MSGFLOW = ? and APPLICATION =?';
+		PASSTHRU(cSQL, rIAppToken.applResponsible , rIAppToken.interfaceVersion,rIAppToken.resourceURI, rIAppToken.messageFlow, rIAppToken.application,rIQueryString.messageFlow,rIQueryString.application  );
+		
+	END;
+	CREATE PROCEDURE deleteApplicationToken()
+	BEGIN
+		sET OutputRoot.BLOB.BLOB = null;
+		DECLARE rIQueryString REFERENCE TO InputLocalEnvironment.HTTP.Input.QueryString;
+
+		DECLARE cSQL2 CHAR 'select * from application_tokens where MSGFLOW =? AND APPLICATION =? AND (RESOURCE_URI=?)';
+		dECLARE rResp rOW; 
+		sET rResp.row[] = PASSTHRU(cSQL2,COALESCE(rIQueryString.messageFlow,''), COALESCE(rIQueryString.application,''), COALESCE(rIQueryString.resourceURI,''));
+		dECLARE rTest REFERENCE TO rResp.row;
+		dECLARE rLC REFERENCE TO Environment.Variables.Delted;
+		
+		IF NOT LASTMOVE(rLC) AND NOT LASTMOVE(rTest) THEN
+			THROW USER EXCEPTION values ('Application token cant be found');
+		eND IF;	
+		
+		DECLARE cSQL CHAR 'delete from  application_tokens where MSGFLOW = ? and APPLICATION =?';
+		PASSTHRU(cSQL,rIQueryString.messageFlow, rIQueryString.application  );
+		sET Environment.Variables.Delted = tRUE;
+		
+	END;
+	
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		dECLARE rA rEFERENCE TO InputRoot.HTTPInputHeader."Authorization" ;
+		IF nOT LASTMOVE(rA) oR fIELDVALUE(rA) <> flowIdentificationToken   THEN
+			THROW USER EXCEPTION VALUES('Authorization failed');
+		END IF;	
+/*
+1. find out method
+2. process create update or deletion
+3. forward execution to next node for response processing
+*/		
+
+-- 1. find out the method
+	dECLARE cMethod char InputRoot.HTTPInputHeader."X-Original-HTTP-Command";	
+
+	SET cMethod = TRIM(SUBSTRING(cMethod fROM 1 FOR POSITION(' ' IN cMethod)));
+    SET Environment.Variables.Request.Method = cMethod;
+	CALL CopyEntireMessage();
+    
+	
+	-- TODO cHeck that ApplicationToken is one of the registered ones
+		--CALL CopyEntireMessage();
+		SET OutputLocalEnvironment = InputLocalEnvironment;
+		--SET OutputLocalEnvironment.Destination.HTTP.RequestURL = UltimateProviderBaseURL;
+		SET OutputRoot.HTTPRequestHeader."Authorization" = UltimateProviderSecurityIdentity;
+		
+	-- TODO set ultimate serviceprovider url
+	SET OutputLocalEnvironment.Destination.HTTP.RequestURL = UltimateProviderBaseURL||cOALESCE('?'||InputRoot.HTTPInputHeader."X-Query-String",'');
+	--dECLARE cMethod char InputRoot.HTTPInputHeader."X-Original-HTTP-Command";	
+	SET OutputLocalEnvironment.Destination.HTTP.RequestLine.Method = cMethod;
+
+	CASE cMethod
+		WHEN 'POST' THEN CALL createApplicationToken();
+		WHEN 'PUT' THEN CALL updateApplicationToken();
+		WHEN 'DELETE' THEN CALL deleteApplicationToken();
+		WHEN 'GET' THEN CALL requestApplicationToken();
+	END CASE;	
+	
+		RETURN TRUE;
+	END;
+
+	CREATE PROCEDURE CopyMessageHeaders() BEGIN
+		DECLARE I INTEGER 1;
+		DECLARE J INTEGER;
+		SET J = CARDINALITY(InputRoot.*[]);
+		WHILE I < J DO
+			SET OutputRoot.*[I] = InputRoot.*[I];
+			SET I = I + 1;
+		END WHILE;
+	END;
+
+	CREATE PROCEDURE CopyEntireMessage() BEGIN
+		SET OutputRoot = InputRoot;
+	END;
+END MODULE;
