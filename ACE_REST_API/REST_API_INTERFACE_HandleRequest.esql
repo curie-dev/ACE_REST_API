@@ -1,6 +1,6 @@
 
 DECLARE UltimateProviderSecurityIdentity EXTERNAL CHAR '';
-DECLARE UltimateProviderBaseURL EXTERNAL CHAR '';
+
 DECLARE flowIdentificationToken EXTERNAL CHAR '';
 
 
@@ -79,11 +79,11 @@ CREATE COMPUTE MODULE REST_API_INTERFACE_HandleRequest
 	-- TODO cHeck that ApplicationToken is one of the registered ones
 		--CALL CopyEntireMessage();
 		SET OutputLocalEnvironment = InputLocalEnvironment;
-		--SET OutputLocalEnvironment.Destination.HTTP.RequestURL = UltimateProviderBaseURL;
+
 		SET OutputRoot.HTTPRequestHeader."Authorization" = UltimateProviderSecurityIdentity;
 		
 	-- TODO set ultimate serviceprovider url
-	SET OutputLocalEnvironment.Destination.HTTP.RequestURL = UltimateProviderBaseURL||cOALESCE('?'||InputRoot.HTTPInputHeader."X-Query-String",'');
+
 	--dECLARE cMethod char InputRoot.HTTPInputHeader."X-Original-HTTP-Command";	
 	SET OutputLocalEnvironment.Destination.HTTP.RequestLine.Method = cMethod;
 
